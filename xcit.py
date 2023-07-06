@@ -158,9 +158,9 @@ class ClassAttention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        qkv = self.qkv(x).reshape(B, N, 3 * self.num_heads, C // self.num_heads)
+        qkv = qkv.permute(0, 2, 1, 3)
+        q, k, v = torch.split(qkv, self.num_heads, dim=1)
 
         qc = q[:, :, 0:1]   # CLS token
         attn_cls = (qc * k).sum(dim=-1) * self.scale
@@ -208,7 +208,8 @@ class ClassAttentionBlock(nn.Module):
         if self.tokens_norm:
             x = self.norm2(x)
         else:
-            x[:, 0:1] = self.norm2(x[:, 0:1])
+            # x[:, 0:1] = self.norm2(x[:, 0:1])
+            x = torch.cat([self.norm2(x[:, 0:1]), x[:, 1:]], dim=1)
 
         x_res = x
         cls_token = x[:, 0:1]
@@ -236,16 +237,16 @@ class XCA(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        qkv = self.qkv(x).reshape(B, N, 3 * self.num_heads, C // self.num_heads)
+        qkv = qkv.permute(0, 2, 1, 3)
+        q, k, v = torch.split(qkv, self.num_heads, dim=1)
 
         q = q.transpose(-2, -1)
         k = k.transpose(-2, -1)
         v = v.transpose(-2, -1)
 
-        q = torch.nn.functional.normalize(q, dim=-1)
-        k = torch.nn.functional.normalize(k, dim=-1)
+        q = q / (q.pow(2).mean(dim=-1)).sqrt().reshape(B, self.num_heads, C // self.num_heads, 1) / torch.sqrt(torch.tensor([N], device='cuda'))
+        k = k / (k.pow(2).mean(dim=-1)).sqrt().reshape(B, self.num_heads, C // self.num_heads, 1) / torch.sqrt(torch.tensor([N], device='cuda'))
 
         attn = (q @ k.transpose(-2, -1)) * self.temperature
         attn = attn.softmax(dim=-1)
